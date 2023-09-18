@@ -1,6 +1,6 @@
 # OccupancyDETR: Making Semantic Scene Completion as Straightforward as Object Detection
 
-Yupeng Jia*, Jie He*, Runze Chen, Fang Zha and Haiyong Luo
+Yupeng Jia*, Jie He*, Runze Chen, Fang Zhao and Haiyong Luo
 
 \* Equal contribution
 
