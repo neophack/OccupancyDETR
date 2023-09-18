@@ -1,0 +1,9 @@
+datasets
+numpy
+pyvista
+scipy
+tensorboard
+timm
+torchvision
+tqdm
+transformers[torch]
