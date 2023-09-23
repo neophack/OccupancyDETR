@@ -11,10 +11,11 @@ class OccupancyDetrConfig(DeformableDetrConfig):
         image_width=1220,
         image_height=370,
         # OccupancyDetr parameters
+        mixed_query_selection=False,
         query_mode="bev",  # "bev" or "3d"
-        query_shape=(8, 8, 2),
+        query_shape=(32, 32, 8),
         larger_boxes=0.05,
-        confidence_threshold=0.8,
+        confidence_threshold=0.5,
         occupancy_threshold=0.5,
         occ_decoder_layers=6,
         occ_decoder_batch_size=32,
@@ -24,11 +25,19 @@ class OccupancyDetrConfig(DeformableDetrConfig):
         dn_number=0,
         dn_box_noise_scale=0.4,
         dn_label_noise_ratio=0.5,
+        weight_dict = {
+            "ce": 1,
+            "bbox": 5,
+            # "bbox3d": 5,
+            # "giou": 2,
+            # "giou3d": 5,
+            # "dice3d": 2,
+        },
         # original DeformableDetrConfig parameters
         use_timm_backbone=True,
         backbone_config=None,
         num_channels=3,
-        num_queries=100,
+        num_queries=900,
         encoder_layers=6,
         encoder_ffn_dim=1024,
         encoder_attention_heads=8,
@@ -74,6 +83,7 @@ class OccupancyDetrConfig(DeformableDetrConfig):
         self.voxel_origin = voxel_origin
         self.image_width = image_width
         self.image_height = image_height
+        self.mixed_query_selection = mixed_query_selection
         self.query_mode = query_mode
         self.query_shape = query_shape
         self.larger_boxes = larger_boxes
@@ -86,6 +96,7 @@ class OccupancyDetrConfig(DeformableDetrConfig):
         self.dn_number = dn_number
         self.dn_box_noise_scale = dn_box_noise_scale
         self.dn_label_noise_ratio = dn_label_noise_ratio
+        self.weight_dict = weight_dict
         self.pad_token_id = 0
         self.dropout = 0
         self.encoder_layerdrop = 0

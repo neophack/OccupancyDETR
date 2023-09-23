@@ -19,7 +19,9 @@ class OccupancyDetrOutput(ModelOutput):
     loss_dict: Optional[Dict] = None
     logits: torch.FloatTensor = None  # all queries logits
     pred_logits: torch.FloatTensor = None  # filtered by confidence_threshold
+    boxes: torch.FloatTensor = None  # all queries boxes
     pred_boxes: torch.FloatTensor = None  # filtered by confidence_threshold
+    boxes3d: torch.FloatTensor = None  # all queries boxes3d
     pred_boxes3d: torch.FloatTensor = None  # filtered by confidence_threshold
     pred_occ: torch.FloatTensor = None  # filtered by confidence_threshold
     num_preds: torch.LongTensor = None  # number of predictions for each image
@@ -100,7 +102,7 @@ class OccupancyDetr(OccupancyDetrPretrainedModel):
         ids=None,
     ):
         labels_dict = None
-        if labels is not None:
+        if self.training and labels is not None:
             labels_dict = []
             for cls, bbox, bbox3d, obj3d in zip(labels, label_boxes, label_boxes3d, label_obj3d):
                 cls_mask = cls != -1
@@ -118,6 +120,7 @@ class OccupancyDetr(OccupancyDetrPretrainedModel):
             dn_query_label, dn_query_bbox, dn_mask, dn_meta = None, None, None, None
 
         # First, sent images through DETR base model to obtain encoder + decoder outputs
+        early_matching = self.config.early_matching and self.training
         outputs: OccupancyDetrModelOutput = self.model(
             pixel_values,
             pixel_mask=pixel_mask,
@@ -130,8 +133,8 @@ class OccupancyDetr(OccupancyDetrPretrainedModel):
             dn_query_label=dn_query_label,
             dn_query_bbox=dn_query_bbox,
             dn_mask=dn_mask,
-            matcher=self.matcher if self.config.early_matching else None,
-            labels_dict=labels_dict if self.config.early_matching else None,
+            matcher=self.matcher if early_matching else None,
+            labels_dict=labels_dict if early_matching else None,
         )
 
         hidden_states = outputs.intermediate_hidden_states
@@ -177,18 +180,22 @@ class OccupancyDetr(OccupancyDetrPretrainedModel):
                 self._set_aux_loss,
             )
         logits = outputs_class[-1]
-        pred_boxes = outputs_boxes[-1]
-        pred_boxes3d = outputs_boxes3d
+        boxes = outputs_boxes[-1]
+        boxes3d = outputs_boxes3d
         pred_occ = None
         pred_logits = None
+        pred_boxes = None
+        pred_boxes3d = None
 
-        loss, loss_dict, auxiliary_outputs = None, None, None
-        if labels is not None:
+        loss_dict = {}
+        loss = torch.tensor(0.0, device=logits.device)
+        num_preds = torch.zeros(logits.shape[0], dtype=torch.long, device=logits.device)
+        if self.training and labels is not None:
             # First: extract outputs
             outputs_loss = {"ids": ids}
             outputs_loss["logits"] = logits
-            outputs_loss["pred_boxes"] = pred_boxes
-            outputs_loss["pred_boxes3d"] = pred_boxes3d
+            outputs_loss["pred_boxes"] = boxes
+            outputs_loss["pred_boxes3d"] = boxes3d
             outputs_loss["dn_meta"] = dn_meta
             outputs_loss["enc_outputs"] = {
                 "logits": outputs.enc_outputs_class,
@@ -213,7 +220,7 @@ class OccupancyDetr(OccupancyDetrPretrainedModel):
                 b_idx, target_b_idx = b_idx[sample], target_b_idx[sample]
                 idx, target_idx = idx[sample], target_idx[sample]
                 obj_hidden_states = hidden_states[b_idx, -1, idx]
-                obj_boxes3d = pred_boxes3d[b_idx, idx].clone()
+                obj_boxes3d = boxes3d[b_idx, idx].clone()
                 obj_boxes3d[:, 3:] += self.config.larger_boxes
                 obj_boxes3d = corners_to_center_format3d(center_to_corners_format3d(obj_boxes3d))
                 features2d = encoder_last_hidden_state[b_idx]
@@ -236,37 +243,18 @@ class OccupancyDetr(OccupancyDetrPretrainedModel):
             loss_dict = self.criterion(outputs_loss, labels_dict, indices)
 
             # Fourth: compute total loss, as a weighted sum of the various losses
-            weight_dict = {
-                "ce": 1,
-                "bbox": self.config.bbox_loss_coefficient,
-                "bbox3d": self.config.bbox_loss_coefficient,
-                "giou": self.config.giou_loss_coefficient,
-                "giou3d": self.config.giou_loss_coefficient,
-                "dice3d": self.config.mask_loss_coefficient,
-            }
-            w_losses = []
-            for k, v in loss_dict.items():
-                tag, loss_k = k.split("_")[:2]
-                if tag == "loss" and loss_k in weight_dict:
-                    w_losses.append(weight_dict[loss_k] * v)
-
-            loss = sum(w_losses)
-
-            confidences = logits.sigmoid().max(dim=-1).values
-            indices = (confidences > self.config.confidence_threshold).nonzero()
-            b_idx, idx = indices[:, 0], indices[:, 1]
-            obj_hidden_states = hidden_states[:, -1][b_idx, idx]
-            pred_logits = logits[b_idx, idx]
-            pred_boxes = pred_boxes[b_idx, idx]
-            pred_boxes3d = pred_boxes3d[b_idx, idx]
+            loss = self.criterion.sum_loss(loss_dict)
+        
         else:
             confidences = logits.sigmoid().max(dim=-1).values
             indices = (confidences > self.config.confidence_threshold).nonzero()
             b_idx, idx = indices[:, 0], indices[:, 1]
+            for i in range(len(b_idx)):
+                num_preds[b_idx[i]] += 1
             obj_hidden_states = hidden_states[:, -1][b_idx, idx]
             pred_logits = logits[b_idx, idx]
-            pred_boxes = pred_boxes[b_idx, idx]
-            pred_boxes3d = pred_boxes3d[b_idx, idx]
+            pred_boxes = boxes[b_idx, idx]
+            pred_boxes3d = boxes3d[b_idx, idx]
             obj_boxes3d = pred_boxes3d.clone()
             obj_boxes3d[:, 3:] += self.config.larger_boxes
             obj_boxes3d = corners_to_center_format3d(center_to_corners_format3d(obj_boxes3d))
@@ -295,15 +283,14 @@ class OccupancyDetr(OccupancyDetrPretrainedModel):
                     occs.append(occs_batch)
                 pred_occ = torch.cat(occs, dim=0)
 
-        num_preds = torch.zeros(logits.shape[0], dtype=torch.long, device=logits.device)
-        for i in range(len(b_idx)):
-            num_preds[b_idx[i]] += 1
         return OccupancyDetrOutput(
             loss=loss,
             loss_dict=loss_dict,
             logits=logits,
             pred_logits=pred_logits,
+            boxes=boxes,
             pred_boxes=pred_boxes,
+            boxes3d=boxes3d,
             pred_boxes3d=pred_boxes3d,
             pred_occ=pred_occ,
             num_preds=num_preds,

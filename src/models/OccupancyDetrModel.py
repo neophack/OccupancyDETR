@@ -238,9 +238,11 @@ class OccupancyDetrModel(OccupancyDetrPretrainedModel):
 
         topk_coords_unact = torch.gather(enc_outputs_coord_logits, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)).detach()
         reference_points = topk_coords_unact.sigmoid()
-        query = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, output_memory.shape[-1])).detach()
-        if dn_query_bbox is not None and dn_query_label is not None:
+        if self.config.mixed_query_selection:
             query = self.query_embeddings.weight.unsqueeze(0).repeat(batch_size, 1, 1)
+        else:
+            query = torch.gather(output_memory, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, output_memory.shape[-1])).detach()
+        if dn_query_bbox is not None and dn_query_label is not None:
             reference_points = torch.cat([dn_query_bbox.sigmoid(), reference_points], 1)
             query = torch.cat([dn_query_label, query], dim=1)
         init_reference_points = reference_points

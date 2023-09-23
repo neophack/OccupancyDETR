@@ -132,6 +132,26 @@ class OccupancyDetrLoss(DeformableDetrLoss):
         num_boxes = torch.clamp(num_boxes, min=1).item()
 
         losses = {}
+        # For two stage, compute losses for proposals
+        if "enc_outputs" in outputs:
+            enc_outputs = outputs["enc_outputs"]
+            proposal_indices = enc_outputs["proposal_indices"]
+            if proposal_indices is None:
+                proposal_indices = self.matcher(enc_outputs, targets)
+            bin_targets = copy.deepcopy(targets)
+            for bt in bin_targets:
+                bt["class_labels"] = torch.zeros_like(bt["class_labels"])
+            for loss in self.losses:
+                l_dict = self.get_loss(loss, enc_outputs, bin_targets, proposal_indices, num_boxes)
+                l_dict = {k + "_enc": v for k, v in l_dict.items()}
+                losses.update(l_dict)
+            if self.config.only_encoder_loss:
+                return losses
+
+        # Compute all the requested losses
+        for loss in self.losses:
+            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
+
         # Compute DN losses
         dn_meta = outputs["dn_meta"]
         if self.training and dn_meta and "output_known_lbs_bboxes" in dn_meta:
@@ -158,26 +178,6 @@ class OccupancyDetrLoss(DeformableDetrLoss):
             l_dict = {k + f"_dn": v for k, v in l_dict.items()}
             losses.update(l_dict)
 
-        # For two stage, compute losses for proposals
-        if "enc_outputs" in outputs:
-            enc_outputs = outputs["enc_outputs"]
-            indices = enc_outputs["proposal_indices"]
-            if indices is None:
-                indices = self.matcher(enc_outputs, targets)
-            bin_targets = copy.deepcopy(targets)
-            for bt in bin_targets:
-                bt["class_labels"] = torch.zeros_like(bt["class_labels"])
-            for loss in self.losses:
-                l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes)
-                l_dict = {k + "_enc": v for k, v in l_dict.items()}
-                losses.update(l_dict)
-            if self.config.only_encoder_loss:
-                return losses
-
-        # Compute all the requested losses
-        for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
-
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "auxiliary_outputs" in outputs:
             for i, auxiliary_outputs in enumerate(outputs["auxiliary_outputs"]):
@@ -195,3 +195,12 @@ class OccupancyDetrLoss(DeformableDetrLoss):
                     losses.update(l_dict)
 
         return losses
+
+    def sum_loss(self, loss_dict):
+        w_losses = []
+        for k, v in loss_dict.items():
+            tag, loss_k = k.split("_")[:2]
+            if tag == "loss" and loss_k in self.config.weight_dict:
+                w_losses.append(self.config.weight_dict[loss_k] * v)
+        loss = sum(w_losses) 
+        return loss
